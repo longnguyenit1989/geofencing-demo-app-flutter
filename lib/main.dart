@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:geofence_foreground_service/constants/geofence_event_type.dart';
 import 'package:geofence_foreground_service/exports.dart';
 import 'package:geofence_foreground_service/models/zone.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geofence_foreground_service/geofence_foreground_service.dart';
@@ -90,6 +91,7 @@ Future<String> callApiNoty(String zoneID) async {
     final res = await http.post(url,
         headers: {"Content-Type": "application/json"}, body: body);
     if (res.statusCode >= 200 && res.statusCode <= 300) {
+      print('callApiNoty success');
       // final jsonResp = jsonDecode(res.body.trim());
       final sendPort = IsolateNameServer.lookupPortByName('noty_port');
       sendPort?.send({
@@ -181,14 +183,26 @@ class _GeofencePageState extends State<GeofencePage> {
     }
   }
 
+  Future<Position> _getCurrentPosition() async {
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 0, // 0: always get newest location
+      ),
+    );
+    return position;
+  }
+
   Future<void> _fetchShopsAndRegisterZones() async {
+    final currentPosition = await _getCurrentPosition();
     try {
       final res = await http.post(
         Uri.parse('$BASE_URL/shops/nearby'),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"latitude": 21.0085682, "longtitude": 105.8205329}),
+        body: jsonEncode({"latitude": currentPosition.latitude, "longtitude": currentPosition.longitude}),
       );
       final List shops = jsonDecode(res.body);
+      print("currentPosition: $currentPosition");
       print("shops response: $shops");
       for (var shop in shops) {
         final idStr = shop['id'].toString();
