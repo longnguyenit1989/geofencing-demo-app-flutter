@@ -13,6 +13,7 @@ import 'package:geofence_foreground_service/geofence_foreground_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 const String BASE_URL = "http://192.168.1.43:8000";
+const String KEY_NOTY_PORT = "noty_port";
 final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
 
 Future<void> initNotifications() async {
@@ -82,7 +83,7 @@ void callbackDispatcher() {
   );
 }
 
-Future<String> callApiNoty(String zoneID) async {
+Future<void> callApiNoty(String zoneID) async {
   try {
     final url = Uri.parse('$BASE_URL/shops/notify');
     final body = jsonEncode({
@@ -93,14 +94,13 @@ Future<String> callApiNoty(String zoneID) async {
     if (res.statusCode >= 200 && res.statusCode <= 300) {
       print('callApiNoty success');
       // final jsonResp = jsonDecode(res.body.trim());
-      final sendPort = IsolateNameServer.lookupPortByName('noty_port');
+      final sendPort = IsolateNameServer.lookupPortByName(KEY_NOTY_PORT);
       sendPort?.send({
         'zoneID': zoneID,
         'shopName': zoneID,
       });
     }
   } catch (_) {}
-  return zoneID;
 }
 
 void main() async {
@@ -110,7 +110,7 @@ void main() async {
   final ReceivePort notyPort = ReceivePort();
   IsolateNameServer.registerPortWithName(
     notyPort.sendPort,
-    'noty_port',
+    KEY_NOTY_PORT,
   );
 
   notyPort.listen((dynamic data) {
