@@ -14,7 +14,18 @@ import 'package:permission_handler/permission_handler.dart';
 
 const String BASE_URL = "http://192.168.1.43:8000";
 const String KEY_NOTY_PORT = "noty_port";
+const String KEY_ZONEID = "zoneID";
+const String KEY_SHOP_NAME = "shopName";
+
+const String KEY_USER_ZONE_CURRENT_LOCATION = "user_zone_current_location";
+const String KEY_EXIT_ZONE = "exit_zone";
+const double RADIUS_EXIT_ZONE = 800;
+
+const String KEY_ACTION = "action";
+
 final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
+
+final List<Zone> _zones = [];
 
 Future<void> initNotifications() async {
   const AndroidInitializationSettings initAndroid =
@@ -75,7 +86,19 @@ void callbackDispatcher() {
 
   GeofenceForegroundService().handleTrigger(
     backgroundTriggerHandler: (zoneID, triggerType) async {
-      if (triggerType == GeofenceEventType.enter) {
+      await Future.delayed(const Duration(seconds: 1));
+
+      if (zoneID == KEY_USER_ZONE_CURRENT_LOCATION &&
+          triggerType == GeofenceEventType.exit) {
+        final sendPort = IsolateNameServer.lookupPortByName(KEY_NOTY_PORT);
+        sendPort?.send(
+            {KEY_ZONEID: zoneID, KEY_ACTION: KEY_EXIT_ZONE, KEY_SHOP_NAME: ''});
+        print('callbackDispatcher: user exit zone');
+        return true;
+      }
+
+      if (zoneID != KEY_USER_ZONE_CURRENT_LOCATION &&
+          triggerType == GeofenceEventType.enter) {
         await callApiNoty(zoneID);
       }
       return true;
@@ -96,8 +119,8 @@ Future<void> callApiNoty(String zoneID) async {
       // final jsonResp = jsonDecode(res.body.trim());
       final sendPort = IsolateNameServer.lookupPortByName(KEY_NOTY_PORT);
       sendPort?.send({
-        'zoneID': zoneID,
-        'shopName': zoneID,
+        KEY_ZONEID: zoneID,
+        KEY_SHOP_NAME: zoneID,
       });
     }
   } catch (_) {}
@@ -107,20 +130,107 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initNotifications();
 
-  final ReceivePort notyPort = ReceivePort();
+  final ReceivePort receivePort = ReceivePort();
   IsolateNameServer.registerPortWithName(
-    notyPort.sendPort,
+    receivePort.sendPort,
     KEY_NOTY_PORT,
   );
 
-  notyPort.listen((dynamic data) {
-    final zoneID = data['zoneID'] as String;
-    final shopName = data['shopName'] as String;
-    showNotyLocal(zoneID, shopName);
+  receivePort.listen((dynamic data) async {
+    final zoneID = data[KEY_ZONEID] as String? ?? '';
+    final shopName = data[KEY_SHOP_NAME] as String? ?? '';
+
+    if (data[KEY_ACTION] == KEY_EXIT_ZONE) {
+      print('receivePort listen data: $data');
+      await _removeAllZones();
+      await _registerUserCurrentLocationZone();
+      await _fetchShopsAndRegisterZones();
+      return;
+    }
+
+    if (shopName.isNotEmpty) {
+      showNotyLocal(zoneID, shopName);
+    }
   });
 
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   runApp(const MyApp());
+}
+
+Future<void> _removeAllZones() async {
+  if (_zones.isNotEmpty) {
+    for (var zone in _zones) {
+      await GeofenceForegroundService().removeGeofenceZone(zoneId: zone.id);
+    }
+    _zones.clear();
+    print('All geofence zones removed.');
+  }
+}
+
+Future<void> _registerUserCurrentLocationZone() async {
+  final pos = await _getCurrentPosition();
+  final zone = Zone(
+    id: KEY_USER_ZONE_CURRENT_LOCATION,
+    radius: RADIUS_EXIT_ZONE,
+    coordinates: [
+      LatLng(Angle.degree(pos.latitude), Angle.degree(pos.longitude))
+    ],
+    triggers: [GeofenceEventType.exit],
+    expirationDuration: const Duration(days: 1),
+    initialTrigger: GeofenceEventType.exit,
+  );
+  await GeofenceForegroundService().addGeofenceZone(zone: zone);
+  _zones.add(zone);
+  print('_registerUserCurrentLocationZone');
+}
+
+Future<void> _fetchShopsAndRegisterZones() async {
+  final currentPosition = await _getCurrentPosition();
+  try {
+    final res = await http.post(
+      Uri.parse('$BASE_URL/shops/nearby'),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({
+        "latitude": currentPosition.latitude,
+        "longtitude": currentPosition.longitude
+      }),
+    );
+    final List shops = jsonDecode(res.body);
+    print("currentPosition: $currentPosition");
+    print("shops response: $shops");
+    for (var shop in shops) {
+      final idStr = shop['id'].toString();
+      final lat = double.parse(shop['latitude'].toString());
+      final lng = double.parse(shop['longtitude'].toString());
+      final radius = double.parse(shop['notifyRadius'].toString());
+      final zone = Zone(
+        id: idStr,
+        radius: radius,
+        coordinates: [LatLng(Angle.degree(lat), Angle.degree(lng))],
+        triggers: [
+          GeofenceEventType.enter,
+          GeofenceEventType.exit,
+        ],
+        expirationDuration: const Duration(days: 1),
+        dwellLoiteringDelay: const Duration(seconds: 5),
+        initialTrigger: GeofenceEventType.enter,
+      );
+      await GeofenceForegroundService().addGeofenceZone(zone: zone);
+      _zones.add(zone);
+    }
+  } catch (e, st) {
+    print('Exception fetching shops: $e\n$st');
+  }
+}
+
+Future<Position> _getCurrentPosition() async {
+  final position = await Geolocator.getCurrentPosition(
+    locationSettings: const LocationSettings(
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 1, // 1 m will get newest location
+    ),
+  );
+  return position;
 }
 
 class MyApp extends StatelessWidget {
@@ -143,8 +253,6 @@ class GeofencePage extends StatefulWidget {
 }
 
 class _GeofencePageState extends State<GeofencePage> {
-  final List<Zone> _zones = [];
-
   @override
   void initState() {
     super.initState();
@@ -164,6 +272,7 @@ class _GeofencePageState extends State<GeofencePage> {
     );
 
     if (hasServiceStarted) {
+      await _registerUserCurrentLocationZone();
       await _fetchShopsAndRegisterZones();
     }
   }
@@ -183,54 +292,6 @@ class _GeofencePageState extends State<GeofencePage> {
     }
   }
 
-  Future<Position> _getCurrentPosition() async {
-    final position = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 0, // 0: always get newest location
-      ),
-    );
-    return position;
-  }
-
-  Future<void> _fetchShopsAndRegisterZones() async {
-    final currentPosition = await _getCurrentPosition();
-    try {
-      final res = await http.post(
-        Uri.parse('$BASE_URL/shops/nearby'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"latitude": currentPosition.latitude, "longtitude": currentPosition.longitude}),
-      );
-      final List shops = jsonDecode(res.body);
-      print("currentPosition: $currentPosition");
-      print("shops response: $shops");
-      for (var shop in shops) {
-        final idStr = shop['id'].toString();
-        final lat = double.parse(shop['latitude'].toString());
-        final lng = double.parse(shop['longtitude'].toString());
-        final radius = double.parse(shop['notifyRadius'].toString());
-        final zone = Zone(
-          id: idStr,
-          radius: radius,
-          coordinates: [LatLng(Angle.degree(lat), Angle.degree(lng))],
-          triggers: [
-            GeofenceEventType.enter,
-            GeofenceEventType.exit,
-            GeofenceEventType.dwell,
-          ],
-          expirationDuration: const Duration(days: 1),
-          dwellLoiteringDelay: const Duration(seconds: 5),
-          initialTrigger: GeofenceEventType.enter,
-        );
-        await GeofenceForegroundService().addGeofenceZone(zone: zone);
-        _zones.add(zone);
-      }
-      setState(() {});
-    } catch (e, st) {
-      print('Exception fetching shops: $e\n$st');
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -245,7 +306,7 @@ class _GeofencePageState extends State<GeofencePage> {
             const SizedBox(height: 8),
             ElevatedButton(
               onPressed: () async {
-                setState(() => _zones.clear());
+                await _removeAllZones();
               },
               child: const Text('Delete all regions'),
             ),
