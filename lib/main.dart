@@ -19,13 +19,11 @@ const String KEY_SHOP_NAME = "shopName";
 
 const String KEY_USER_ZONE_CURRENT_LOCATION = "user_zone_current_location";
 const String KEY_EXIT_ZONE = "exit_zone";
-const double RADIUS_EXIT_ZONE = 800;
+const double RADIUS_EXIT_ZONE = 700;
 
 const String KEY_ACTION = "action";
 
 final FlutterLocalNotificationsPlugin flnp = FlutterLocalNotificationsPlugin();
-
-final List<Zone> _zones = [];
 
 Future<void> initNotifications() async {
   const AndroidInitializationSettings initAndroid =
@@ -142,9 +140,7 @@ void main() async {
 
     if (data[KEY_ACTION] == KEY_EXIT_ZONE) {
       print('receivePort listen data: $data');
-      await _removeAllZones();
-      await _registerUserCurrentLocationZone();
-      await _fetchShopsAndRegisterZones();
+      await _removeAllOldZonesAndRegisterNewZone();
       return;
     }
 
@@ -157,14 +153,16 @@ void main() async {
   runApp(const MyApp());
 }
 
+Future<void> _removeAllOldZonesAndRegisterNewZone() async {
+  await _removeAllZones();
+  await Future.delayed(const Duration(seconds: 1));
+  await _registerUserCurrentLocationZone();
+  await _fetchShopsAndRegisterZones();
+}
+
 Future<void> _removeAllZones() async {
-  if (_zones.isNotEmpty) {
-    for (var zone in _zones) {
-      await GeofenceForegroundService().removeGeofenceZone(zoneId: zone.id);
-    }
-    _zones.clear();
-    print('All geofence zones removed.');
-  }
+  await GeofenceForegroundService().removeAllGeoFences();
+  print('All geofence zones removed.');
 }
 
 Future<void> _registerUserCurrentLocationZone() async {
@@ -175,12 +173,15 @@ Future<void> _registerUserCurrentLocationZone() async {
     coordinates: [
       LatLng(Angle.degree(pos.latitude), Angle.degree(pos.longitude))
     ],
-    triggers: [GeofenceEventType.exit],
+    triggers: [
+      GeofenceEventType.exit,
+      GeofenceEventType.enter,
+      GeofenceEventType.dwell
+    ],
     expirationDuration: const Duration(days: 1),
     initialTrigger: GeofenceEventType.exit,
   );
   await GeofenceForegroundService().addGeofenceZone(zone: zone);
-  _zones.add(zone);
   print('_registerUserCurrentLocationZone');
 }
 
@@ -210,13 +211,13 @@ Future<void> _fetchShopsAndRegisterZones() async {
         triggers: [
           GeofenceEventType.enter,
           GeofenceEventType.exit,
+          GeofenceEventType.dwell
         ],
         expirationDuration: const Duration(days: 1),
         dwellLoiteringDelay: const Duration(seconds: 5),
         initialTrigger: GeofenceEventType.enter,
       );
       await GeofenceForegroundService().addGeofenceZone(zone: zone);
-      _zones.add(zone);
     }
   } catch (e, st) {
     print('Exception fetching shops: $e\n$st');
@@ -227,7 +228,6 @@ Future<Position> _getCurrentPosition() async {
   final position = await Geolocator.getCurrentPosition(
     locationSettings: const LocationSettings(
       accuracy: LocationAccuracy.best,
-      distanceFilter: 1, // 1 m will get newest location
     ),
   );
   return position;
@@ -272,8 +272,7 @@ class _GeofencePageState extends State<GeofencePage> {
     );
 
     if (hasServiceStarted) {
-      await _registerUserCurrentLocationZone();
-      await _fetchShopsAndRegisterZones();
+      await _removeAllOldZonesAndRegisterNewZone();
     }
   }
 
@@ -301,9 +300,6 @@ class _GeofencePageState extends State<GeofencePage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Text('Store area tracking'),
-            const SizedBox(height: 8),
-            Text('Registered zones: ${_zones.length}'),
-            const SizedBox(height: 8),
             ElevatedButton(
               onPressed: () async {
                 await _removeAllZones();
